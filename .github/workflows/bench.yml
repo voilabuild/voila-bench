@@ -9,6 +9,9 @@ on:
       voila_ref:
         description: build voila from this branch or commit instead of installing the release
         default: ""
+      reps:
+        description: cold-start repetitions per image
+        default: "3"
       quick:
         description: one cold run, skip the large image
         type: boolean
@@ -65,7 +68,7 @@ jobs:
           VOILA_REGISTRY_TOKEN: ${{ secrets.VOILA_REGISTRY_TOKEN }}
         run: |
           voila --version
-          if [ "${{ inputs.quick }}" = true ]; then args="--quick --reps 1 --warm-reps 3"; else args="--reps 3 --warm-reps 10"; fi
+          if [ "${{ inputs.quick }}" = true ]; then args="--quick --reps 1 --warm-reps 3"; else args="--reps ${{ inputs.reps || 3 }} --warm-reps 10"; fi
           python3 -I bench.py $args --trace-dir traces --out results
           cat results.md >> "$GITHUB_STEP_SUMMARY"
 
