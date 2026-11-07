@@ -55,7 +55,10 @@ jobs:
         working-directory: voila-src
         run: |
           zig build -Doptimize=ReleaseSafe
-          install -m 0755 zig-out/bin/voila "$HOME/.local/bin/voila"
+          dst=$(command -v voila)
+          echo "replacing $dst"
+          sudo install -m 0755 zig-out/bin/voila "$dst"
+          voila --version
 
       - name: Benchmark
         env:
