@@ -20,7 +20,9 @@ re-pushed from the Docker Hub ones with `voila import` + `voila push`.
 
 Caveats:
 
-- A runner is one shared VM; repeat runs vary by about ±20%.
+- A runner is one shared VM, and the first cold run on it is noticeably
+  slower for both tools. Look at the raw runs in `results.json`, not just
+  the medians.
 - Docker runs with its daemon already started; voila has no daemon.
 - Docker Hub is a mature CDN; registry.voila.build is a single small
   deployment.
