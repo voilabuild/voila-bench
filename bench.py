@@ -118,6 +118,67 @@ def traced(out: Path) -> None:
             v.close()
 
 
+def cdn_counts(trace: Path) -> dict[str, int]:
+    """cf-cache-status counts for the chunk GETs of one traced run."""
+    text = trace.read_text().rstrip().rstrip(",") + "]"
+    counts: dict[str, int] = {}
+    for e in json.loads(text):
+        args = e.get("args") or {}
+        if e.get("name") == "http GET" and "/v1/" not in args.get("url", ""):
+            k = args.get("cdn_cache") or "?"
+            counts[k] = counts.get(k, 0) + 1
+    return counts
+
+
+def compare(base_bin: str, reps: int, out: Path) -> list[dict[str, object]]:
+    """Alternates two voila builds in one job: same runner, same CDN edge, same hour.
+    A first untimed run per image shows whether the edge had the chunks cached."""
+    out.mkdir(parents=True, exist_ok=True)
+    bins = {"base": base_bin, "new": shutil.which("voila") or "voila"}
+    rows: list[dict[str, object]] = []
+    for label, _, our_ref, cmd in COLD:
+        slug = label.split(" ")[0].replace(":", "_")
+        runs: list[dict[str, object]] = []
+        order = ["new"] + [b for _ in range(reps) for b in ("base", "new")]
+        for i, which in enumerate(order):
+            v = Voila()
+            trace = out / f"{slug}-{i:02d}-{which}.json"
+            try:
+                env = dict(v.env, VOILA_TRACE=str(trace))
+                t = run([bins[which], "run", "--rm", our_ref, "--", *cmd], env)
+            finally:
+                v.close()
+            runs.append({"build": which, "prime": i == 0, "s": t, "cdn": cdn_counts(trace)})
+        rows.append({"image": label, "runs": runs})
+    return rows
+
+
+def compare_markdown(rows: list[dict[str, object]], env: dict[str, object]) -> str:
+    out = ["## A/B in one job (cold runs, alternating)", ""]
+    for r in rows:
+        runs = r["runs"]  # type: ignore[index]
+        prime = runs[0]
+        out.append(f"### {r['image']}")
+        out.append("")
+        out.append(f"First (untimed) run: {prime['s']:.2f} s, CDN {prime['cdn']}")
+        out.append("")
+        out.append("| build | median | min | max | runs | CDN statuses |")
+        out.append("|---|---|---|---|---|---|")
+        for b in ("base", "new"):
+            xs = [x for x in runs[1:] if x["build"] == b]
+            ts = [x["s"] for x in xs]
+            cdn: dict[str, int] = {}
+            for x in xs:
+                for k, n in x["cdn"].items():
+                    cdn[k] = cdn.get(k, 0) + n
+            out.append(f"| {b} | {statistics.median(ts):.2f} s | {min(ts):.2f} s | {max(ts):.2f} s | {len(ts)} | {cdn} |")
+        out.append("")
+        out.append("Per run: " + ", ".join(f"{x['build']} {x['s']:.2f}" for x in runs[1:]))
+        out.append("")
+    out.append(f"{env['cpus']} CPUs, kernel {env['kernel']}, {env['date']}.")
+    return "\n".join(out) + "\n"
+
+
 def warm(reps: int) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     v = Voila()
@@ -186,6 +247,7 @@ def main() -> None:
     ap.add_argument("--warm-reps", type=int, default=10)
     ap.add_argument("--out", default="results")
     ap.add_argument("--quick", action="store_true", help="skip the large image")
+    ap.add_argument("--compare", metavar="BASE_BIN", help="alternate this voila build with the one on PATH")
     ap.add_argument("--trace-dir", help="also do one traced cold run per image (VOILA_TRACE)")
     a = ap.parse_args()
     if a.quick:
@@ -201,6 +263,14 @@ def main() -> None:
             "date": time.strftime("%Y-%m-%d"),
         },
     }
+    if a.compare:
+        rows = compare(a.compare, a.reps, Path(a.trace_dir or "traces"))
+        res["compare"] = rows
+        Path(f"{a.out}.json").write_text(json.dumps(res, indent=2))
+        md = compare_markdown(rows, res["env"])  # type: ignore[arg-type]
+        Path(f"{a.out}.md").write_text(md)
+        print(md)
+        return
     res["cold"] = cold(a.reps)
     res["warm"] = warm(a.warm_reps)
     if a.trace_dir:

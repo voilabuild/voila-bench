@@ -9,6 +9,9 @@ on:
       voila_ref:
         description: build voila from this branch or commit instead of installing the release
         default: ""
+      baseline_ref:
+        description: with voila_ref, also build this ref and alternate the two in one job
+        default: ""
       reps:
         description: cold-start repetitions per image
         default: "3"
@@ -63,19 +66,33 @@ jobs:
           sudo install -m 0755 zig-out/bin/voila "$dst"
           voila --version
 
+      - name: Build baseline (baseline_ref)
+        if: inputs.baseline_ref != ''
+        run: |
+          git -C voila-src fetch -q origin "${{ inputs.baseline_ref }}"
+          git -C voila-src worktree add -q ../voila-base FETCH_HEAD
+          (cd voila-base && zig build -Doptimize=ReleaseSafe)
+          dir=$(dirname "$(command -v voila)")
+          sudo install -m 0755 voila-base/zig-out/bin/voila "$dir/voila-base"
+          # AppArmor is off for user namespaces on the runner (sysctl above), so any path works.
+
       - name: Benchmark
         env:
           VOILA_REGISTRY_TOKEN: ${{ secrets.VOILA_REGISTRY_TOKEN }}
         run: |
           voila --version
           if [ "${{ inputs.quick }}" = true ]; then args="--quick --reps 1 --warm-reps 3"; else args="--reps ${{ inputs.reps || 3 }} --warm-reps 10"; fi
+          if [ -n "${{ inputs.baseline_ref }}" ]; then args="$args --compare $(command -v voila-base)"; fi
           python3 -I bench.py $args --trace-dir traces --out results
           cat results.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Trace summaries
         if: inputs.voila_ref != ''
         run: |
-          for f in traces/*.json; do
+          pattern='traces/*.json'
+          # A/B mode writes a trace per run; summarize the first (prime) run of each image.
+          if [ -n "${{ inputs.baseline_ref }}" ]; then pattern='traces/*-00-new.json'; fi
+          for f in $pattern; do
             [ -s "$f" ] || continue
             { echo "## Trace: $(basename "$f" .json) (cold, one run)"; echo '```'; python3 -I voila-src/tools/trace_summary.py "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           done
