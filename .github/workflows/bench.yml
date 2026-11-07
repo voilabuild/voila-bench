@@ -1,0 +1,45 @@
+name: bench
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: voila release tag to benchmark
+        default: v0.1.0-alpha.5
+  schedule:
+    - cron: "0 6 * * 1" # Mondays
+
+concurrency:
+  group: bench
+  cancel-in-progress: false
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install voila (the published release, via install.sh)
+        env:
+          VERSION: ${{ inputs.version || 'v0.1.0-alpha.5' }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fuse3
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version "$VERSION" --yes
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Benchmark
+        env:
+          VOILA_REGISTRY_TOKEN: ${{ secrets.VOILA_REGISTRY_TOKEN }}
+        run: |
+          voila --version
+          python3 -I bench.py --reps 3 --warm-reps 10 --out results
+          cat results.md >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results
+          path: results.*
