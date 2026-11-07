@@ -72,8 +72,9 @@ class Voila:
             "VOILA_REGISTRY_TOKEN": os.environ["VOILA_REGISTRY_TOKEN"],
         }
 
-    def run(self, ref: str, cmd: list[str]) -> float:
-        return run(["voila", "run", "--rm", ref, "--", *cmd], self.env)
+    def run(self, ref: str, cmd: list[str], trace: Path | None = None) -> float:
+        env = dict(self.env, VOILA_TRACE=str(trace)) if trace else self.env
+        return run(["voila", "run", "--rm", ref, "--", *cmd], env)
 
     def close(self) -> None:
         shutil.rmtree(self.dir, ignore_errors=True)
@@ -104,6 +105,17 @@ def cold(reps: int) -> list[dict[str, object]]:
             "voila_s": v_t, "voila_rx": v_rx, "voila_disk": v_disk,
         })
     return rows
+
+
+def traced(out: Path) -> None:
+    """One more cold voila run per image with VOILA_TRACE, for builds that support it."""
+    out.mkdir(parents=True, exist_ok=True)
+    for label, _, our_ref, cmd in COLD:
+        v = Voila()
+        try:
+            v.run(our_ref, cmd, trace=out / (label.split(" ")[0].replace(":", "_") + ".json"))
+        finally:
+            v.close()
 
 
 def warm(reps: int) -> list[dict[str, object]]:
@@ -174,6 +186,7 @@ def main() -> None:
     ap.add_argument("--warm-reps", type=int, default=10)
     ap.add_argument("--out", default="results")
     ap.add_argument("--quick", action="store_true", help="skip the large image")
+    ap.add_argument("--trace-dir", help="also do one traced cold run per image (VOILA_TRACE)")
     a = ap.parse_args()
     if a.quick:
         COLD[:] = [c for c in COLD if "full" not in c[0]]
@@ -190,6 +203,8 @@ def main() -> None:
     }
     res["cold"] = cold(a.reps)
     res["warm"] = warm(a.warm_reps)
+    if a.trace_dir:
+        traced(Path(a.trace_dir))
     Path(f"{a.out}.json").write_text(json.dumps(res, indent=2))
     md = markdown(res)
     Path(f"{a.out}.md").write_text(md)

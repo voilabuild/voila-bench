@@ -6,6 +6,9 @@ on:
       version:
         description: voila release tag to benchmark
         default: v0.1.0-alpha.5
+      voila_ref:
+        description: build voila from this branch or commit instead of installing the release
+        default: ""
       quick:
         description: one cold run, skip the large image
         type: boolean
@@ -34,17 +37,47 @@ jobs:
           curl -fsSL https://github.com/voilabuild/voila/raw/main/install.sh | sh -s -- --version "$VERSION" --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+      - name: Check out voila (voila_ref)
+        if: inputs.voila_ref != ''
+        uses: actions/checkout@v4
+        with:
+          repository: voilabuild/voila
+          ref: ${{ inputs.voila_ref }}
+          path: voila-src
+
+      - uses: mlugg/setup-zig@v2
+        if: inputs.voila_ref != ''
+        with:
+          version: 0.17.0
+
+      - name: Build voila (voila_ref) over the release
+        if: inputs.voila_ref != ''
+        working-directory: voila-src
+        run: |
+          zig build -Doptimize=ReleaseSafe
+          install -m 0755 zig-out/bin/voila "$HOME/.local/bin/voila"
+
       - name: Benchmark
         env:
           VOILA_REGISTRY_TOKEN: ${{ secrets.VOILA_REGISTRY_TOKEN }}
         run: |
           voila --version
           if [ "${{ inputs.quick }}" = true ]; then args="--quick --reps 1 --warm-reps 3"; else args="--reps 3 --warm-reps 10"; fi
-          python3 -I bench.py $args --out results
+          python3 -I bench.py $args --trace-dir traces --out results
           cat results.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Trace summaries
+        if: inputs.voila_ref != ''
+        run: |
+          for f in traces/*.json; do
+            [ -s "$f" ] || continue
+            { echo "## Trace: $(basename "$f" .json) (cold, one run)"; echo '```'; python3 -I voila-src/tools/trace_summary.py "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: results
-          path: results.*
+          path: |
+            results.*
+            traces/
