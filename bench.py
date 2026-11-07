@@ -173,7 +173,10 @@ def main() -> None:
     ap.add_argument("--reps", type=int, default=3, help="cold-start repetitions")
     ap.add_argument("--warm-reps", type=int, default=10)
     ap.add_argument("--out", default="results")
+    ap.add_argument("--quick", action="store_true", help="skip the large image")
     a = ap.parse_args()
+    if a.quick:
+        COLD[:] = [c for c in COLD if "full" not in c[0]]
     res: dict[str, object] = {
         "env": {
             "voila": version(["voila", "--version"]),

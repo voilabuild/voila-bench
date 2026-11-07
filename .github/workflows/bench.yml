@@ -6,6 +6,10 @@ on:
       version:
         description: voila release tag to benchmark
         default: v0.1.0-alpha.5
+      quick:
+        description: one cold run, skip the large image
+        type: boolean
+        default: false
   schedule:
     - cron: "0 6 * * 1" # Mondays
 
@@ -35,7 +39,8 @@ jobs:
           VOILA_REGISTRY_TOKEN: ${{ secrets.VOILA_REGISTRY_TOKEN }}
         run: |
           voila --version
-          python3 -I bench.py --reps 3 --warm-reps 10 --out results
+          if [ "${{ inputs.quick }}" = true ]; then args="--quick --reps 1 --warm-reps 3"; else args="--reps 3 --warm-reps 10"; fi
+          python3 -I bench.py $args --out results
           cat results.md >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
