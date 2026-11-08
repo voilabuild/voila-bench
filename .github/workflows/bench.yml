@@ -31,8 +31,10 @@ on:
   schedule:
     - cron: "0 6 * * 1" # Mondays
 
+# One group per suite: GitHub keeps one pending run per group and cancels the rest,
+# so suites dispatched together would cancel each other. Each run has its own VM.
 concurrency:
-  group: bench
+  group: bench-${{ inputs.suite || 'micro' }}
   cancel-in-progress: false
 
 jobs:
