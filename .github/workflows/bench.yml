@@ -13,15 +13,15 @@ on:
         description: with voila_ref, also build this ref and alternate the two in one job
         default: ""
       suite:
-        description: "micro: cold/warm python print(1); ci: build and test jobs (Go, Python, Node)"
+        description: "micro: cold/warm python print(1); ci: build and test jobs (Go, Python, Node); services: time to a ready postgres, redis, Next.js app"
         type: choice
-        options: [micro, ci]
+        options: [micro, ci, services]
         default: micro
       reps:
         description: cold-start repetitions per image
         default: "3"
       prefetch_dirs:
-        description: "ci suite: also run voila with --prefetch-dirs (needs a voila_ref that has it)"
+        description: "ci and services suites: also run voila with --prefetch-dirs (needs a voila_ref that has it)"
         type: boolean
         default: false
       quick:
@@ -91,9 +91,13 @@ jobs:
         run: |
           voila --version
           if [ "${{ inputs.quick }}" = true ]; then args="--quick --reps 1 --warm-reps 3"; else args="--reps ${{ inputs.reps || 3 }} --warm-reps 10"; fi
-          if [ "${{ inputs.suite }}" = ci ]; then
-            ci_args=""
-            if [ "${{ inputs.prefetch_dirs }}" = true ]; then ci_args="--prefetch-dirs"; fi
+          ci_args=""
+          if [ "${{ inputs.prefetch_dirs }}" = true ]; then ci_args="--prefetch-dirs"; fi
+          if [ "${{ inputs.suite }}" = services ]; then
+            # Building the app is setup, not timed: both sides serve the same build.
+            (cd workloads/nextjs && npm ci --no-audit --no-fund && npx next build)
+            python3 -I services.py --reps "${{ inputs.reps || 3 }}" $ci_args --trace-dir traces --out results
+          elif [ "${{ inputs.suite }}" = ci ]; then
             python3 -I ci.py --reps "${{ inputs.reps || 3 }}" $ci_args --trace-dir traces --out results
           else
             if [ -n "${{ inputs.baseline_ref }}" ]; then args="$args --compare $(command -v voila-base)"; fi
@@ -109,6 +113,7 @@ jobs:
           if [ -n "${{ inputs.baseline_ref }}" ]; then pattern='traces/*-00-new.json'; fi
           # The ci suite traces every voila run; summarize the first, the coldest.
           if [ "${{ inputs.suite }}" = ci ]; then pattern='traces/ci-*-1.json'; fi
+          if [ "${{ inputs.suite }}" = services ]; then pattern='traces/svc-*-1.json'; fi
           for f in $pattern; do
             [ -s "$f" ] || continue
             { echo "## Trace: $(basename "$f" .json) (cold, one run)"; echo '```'; python3 -I voila-src/tools/trace_summary.py "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

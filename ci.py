@@ -77,7 +77,14 @@ def project_copy(name: str) -> Path:
     return d
 
 
+def require_ci() -> None:
+    """Cold Docker runs delete every local image: only on a throwaway runner."""
+    if os.environ.get("CI") != "true":
+        raise SystemExit("cold Docker runs delete all local Docker images; run this on a CI runner (CI=true)")
+
+
 def run_docker(hub_ref: str, project: str, env: dict[str, str], sh: str) -> dict[str, float]:
+    require_ci()
     subprocess.run(["docker", "rmi", "-f", hub_ref], capture_output=True)
     subprocess.run(["docker", "image", "prune", "-af"], capture_output=True)
     d = project_copy(project)
