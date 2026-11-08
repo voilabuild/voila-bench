@@ -20,6 +20,10 @@ on:
       reps:
         description: cold-start repetitions per image
         default: "3"
+      prefetch_dirs:
+        description: "ci suite: also run voila with --prefetch-dirs (needs a voila_ref that has it)"
+        type: boolean
+        default: false
       quick:
         description: one cold run, skip the large image
         type: boolean
@@ -88,7 +92,9 @@ jobs:
           voila --version
           if [ "${{ inputs.quick }}" = true ]; then args="--quick --reps 1 --warm-reps 3"; else args="--reps ${{ inputs.reps || 3 }} --warm-reps 10"; fi
           if [ "${{ inputs.suite }}" = ci ]; then
-            python3 -I ci.py --reps "${{ inputs.reps || 3 }}" --trace-dir traces --out results
+            ci_args=""
+            if [ "${{ inputs.prefetch_dirs }}" = true ]; then ci_args="--prefetch-dirs"; fi
+            python3 -I ci.py --reps "${{ inputs.reps || 3 }}" $ci_args --trace-dir traces --out results
           else
             if [ -n "${{ inputs.baseline_ref }}" ]; then args="$args --compare $(command -v voila-base)"; fi
             python3 -I bench.py $args --trace-dir traces --out results
@@ -101,6 +107,8 @@ jobs:
           pattern='traces/*.json'
           # A/B mode writes a trace per run; summarize the first (prime) run of each image.
           if [ -n "${{ inputs.baseline_ref }}" ]; then pattern='traces/*-00-new.json'; fi
+          # The ci suite traces every voila run; summarize the first, the coldest.
+          if [ "${{ inputs.suite }}" = ci ]; then pattern='traces/ci-*-1.json'; fi
           for f in $pattern; do
             [ -s "$f" ] || continue
             { echo "## Trace: $(basename "$f" .json) (cold, one run)"; echo '```'; python3 -I voila-src/tools/trace_summary.py "$f"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

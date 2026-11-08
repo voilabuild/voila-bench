@@ -92,7 +92,9 @@ def run_docker(hub_ref: str, project: str, env: dict[str, str], sh: str) -> dict
         shutil.rmtree(d, ignore_errors=True)
 
 
-def run_voila(our_ref: str, project: str, env: dict[str, str], sh: str, trace: Path | None) -> dict[str, float]:
+def run_voila(
+    our_ref: str, project: str, env: dict[str, str], sh: str, trace: Path | None, flags: tuple[str, ...] = ()
+) -> dict[str, float]:
     d = project_copy(project)
     (d / "home").mkdir()
     venv = {
@@ -107,7 +109,7 @@ def run_voila(our_ref: str, project: str, env: dict[str, str], sh: str, trace: P
     try:
         rx = rx_bytes()
         e = [a for k, v in env.items() for a in ("-e", f"{k}={v}")]
-        job = timed(["voila", "run", "--rm", "-v", f"{d / 'src'}:/src", "-w", "/src", *e, our_ref, "--", "sh", "-c", sh], venv)
+        job = timed(["voila", "run", "--rm", *flags, "-v", f"{d / 'src'}:/src", "-w", "/src", *e, our_ref, "--", "sh", "-c", sh], venv)
         return {"total": job, "job": job, "rx": rx_bytes() - rx}
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -121,33 +123,37 @@ def mb(n: float) -> str:
     return f"{n / 1e6:,.0f} MB"
 
 
+VARIANTS = [("voila", ()), ("voila --prefetch-dirs", ("--prefetch-dirs",))]
+
+
 def markdown(res: dict[str, object]) -> str:
     env = res["env"]
     assert isinstance(env, dict)
+    names = [n for n, _ in VARIANTS if any(n in r for r in res["jobs"])]  # type: ignore[union-attr]
+    med = lambda runs, k: statistics.median(x[k] for x in runs)  # noqa: E731
     out = [
         "## CI job on an empty runner: get the image, build and test",
         "",
         "Docker: `docker pull` from Docker Hub, then `docker run`. voila: `voila run` from registry.voila.build,",
-        "which fetches only the files the job reads. Same runner, alternating, image cache wiped before each run.",
+        "which fetches only the files the job reads. Same runner, interleaved, image cache wiped before each run.",
         "",
-        "| Job | Docker | voila | Downloaded: Docker | Downloaded: voila |",
-        "|---|---|---|---|---|",
+        "| Job | Docker | " + " | ".join(names) + " | Downloaded: Docker | " + " | ".join(f"Downloaded: {n}" for n in names) + " |",
+        "|---|---|" + "---|" * len(names) + "---|" + "---|" * len(names),
     ]
     for r in res["jobs"]:  # type: ignore[union-attr]
-        d, v = r["docker"], r["voila"]
-        dm = statistics.median(x["total"] for x in d)
-        vm = statistics.median(x["total"] for x in v)
-        pull = statistics.median(x["pull"] for x in d)
+        d = r["docker"]
         out.append(
-            f"| {r['job']} (`{r['image']}`) | {secs(dm)} (pull {secs(pull)}) | {secs(vm)} "
-            f"| {mb(statistics.median(x['rx'] for x in d))} | {mb(statistics.median(x['rx'] for x in v))} |"
+            f"| {r['job']} (`{r['image']}`) | {secs(med(d, 'total'))} (pull {secs(med(d, 'pull'))}) | "
+            + " | ".join(secs(med(r[n], "total")) for n in names)
+            + f" | {mb(med(d, 'rx'))} | "
+            + " | ".join(mb(med(r[n], "rx")) for n in names)
+            + " |"
         )
-    out += ["", "Every run:", ""]
+    out += ["", "Every run, in order:", ""]
     for r in res["jobs"]:  # type: ignore[union-attr]
-        out.append(
-            f"- {r['job']}: Docker " + ", ".join(secs(x["total"]) for x in r["docker"])
-            + "; voila " + ", ".join(secs(x["total"]) for x in r["voila"])
-        )
+        parts = [f"Docker " + ", ".join(secs(x["total"]) for x in r["docker"])]
+        parts += [f"{n} " + ", ".join(secs(x["total"]) for x in r[n]) for n in names]
+        out.append(f"- {r['job']}: " + "; ".join(parts))
     out += [
         "",
         f"Medians of {env['reps']} runs each. {env['voila']}, {env['docker']}, {env['cpus']} CPUs, "
@@ -164,7 +170,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--out", default="ci-results")
-    ap.add_argument("--trace-dir", help="also trace one extra voila run per job")
+    ap.add_argument("--trace-dir", help="trace every voila run (one file per run)")
+    ap.add_argument("--prefetch-dirs", action="store_true", help="also run voila with --prefetch-dirs")
     a = ap.parse_args()
     res: dict[str, object] = {
         "env": {
@@ -176,16 +183,24 @@ def main() -> None:
             "date": time.strftime("%Y-%m-%d"),
         }
     }
+    variants = VARIANTS if a.prefetch_dirs else VARIANTS[:1]
+    if a.trace_dir:
+        Path(a.trace_dir).mkdir(parents=True, exist_ok=True)
     jobs = []
     for job, hub_ref, our_ref, project, env, sh in JOBS:
-        d, v = [], []
-        for _ in range(a.reps):
-            d.append(run_docker(hub_ref, project, env, sh))
-            v.append(run_voila(our_ref, project, env, sh, None))
-        if a.trace_dir:
-            Path(a.trace_dir).mkdir(parents=True, exist_ok=True)
-            run_voila(our_ref, project, env, sh, Path(a.trace_dir) / f"ci-{project}.json")
-        jobs.append({"job": job, "image": hub_ref, "docker": d, "voila": v})
+        r: dict[str, object] = {"job": job, "image": hub_ref, "docker": []}
+        for n, _ in variants:
+            r[n] = []
+        for rep in range(a.reps):
+            r["docker"].append(run_docker(hub_ref, project, env, sh))  # type: ignore[union-attr]
+            # Rotate which voila variant goes first, so none always gets a CDN edge the
+            # other just warmed.
+            order = variants[rep % len(variants):] + variants[: rep % len(variants)]
+            for n, flags in order:
+                tag = n.replace("voila", "").strip(" -") or "plain"
+                trace = Path(a.trace_dir) / f"ci-{project}-{tag}-{rep + 1}.json" if a.trace_dir else None
+                r[n].append(run_voila(our_ref, project, env, sh, trace, flags))  # type: ignore[union-attr]
+        jobs.append(r)
     res["jobs"] = jobs
     Path(f"{a.out}.json").write_text(json.dumps(res, indent=2))
     md = markdown(res)
